@@ -55,9 +55,9 @@ class LabelConfig:
     shape that survives this hit rate.
     """
 
-    take_profit: float = 1.50    # +150%
+    take_profit: float = 2.00    # +200%
     stop_loss: float = 0.45      # −45%
-    horizon_min: int = 45
+    horizon_min: int = 60
     # Modelled cost of getting in and out, applied to the realised return.
     round_trip_cost: float = 0.035
     # A pool whose liquidity collapses below this is treated as rugged.

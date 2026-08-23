@@ -336,6 +336,41 @@ def backtest(
             console.print(f"    {count:>5}  {reason}")
 
 
+@app.command()
+def signals(
+    path: str = typer.Option("data/signals.jsonl", help="Signal feed to read"),
+    limit: int = typer.Option(15),
+    valid_only: bool = typer.Option(False, "--valid-only", help="Only signals that have not expired"),
+) -> None:
+    """Show recent trade signals — what to buy, at what size, and how to exit."""
+    from alpha.signals import SignalEmitter
+
+    rows = SignalEmitter(path, echo=False).recent(limit=limit, valid_only=valid_only)
+    if not rows:
+        console.print("[yellow]No signals yet.[/yellow] Run `alpha trade` with a trained model.")
+        raise typer.Exit(0)
+
+    table = Table(show_header=True, header_style="bold")
+    for column in ("time", "symbol", "score", "surv", "size", "liq", "target", "stop", "expires"):
+        table.add_column(column)
+    for row in rows:
+        levels = row.get("exit_levels") or {}
+        table.add_row(
+            str(row.get("created_at", ""))[11:19],
+            str(row.get("symbol", ""))[:12],
+            f"{row.get('score', 0):.0%}",
+            f"{row.get('survival_probability', 0):.0%}",
+            f"${row.get('suggested_usd', 0):,.0f}",
+            f"${row.get('liquidity_usd', 0):,.0f}",
+            f"{levels.get('take_profit_price', 0):.2e}",
+            f"{levels.get('stop_loss_price', 0):.2e}",
+            str(row.get("expires_at", ""))[11:19],
+        )
+    console.print(table)
+    console.print(f"\n[dim]Feed: {path} — one JSON object per line, consumable by an "
+                  f"external execution bot.[/dim]")
+
+
 def _load_scorer(path: str):
     """Load either scorer type — two-stage is preferred, single-stage still works."""
     from alpha.models.scorer import Scorer

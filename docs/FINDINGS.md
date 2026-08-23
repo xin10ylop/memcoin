@@ -395,3 +395,55 @@ operators. A websocket feed plus a public RPC does not win block zero.
 What it does reach is the **first 30–60 seconds**, where latency still matters
 but is no longer the sole determinant, and where the table above still shows
 5–10x outcomes present. That is the window this system is now built for.
+
+
+---
+
+## 11. Exit tuning cannot rescue a bad entry
+
+Grid search over barrier geometry, re-labelling the **same 447 decision points**
+(77 pools) under every combination of take-profit, stop-loss and horizon:
+
+| TP | SL | horizon | hit rate | expectancy | payoff | total losses |
+|---|---|---|---|---|---|---|
+| +30% | −35% | 15m | 18.1% | **−35.2%** | 0.44 | 33.1% |
+| +50% | −45% | 30m | 19.9% | −32.8% | 0.70 | 33.1% |
+| +100% | −45% | 30m | 19.0% | −27.9% | 1.30 | 33.1% |
+| +150% | −45% | 30m | 18.8% | −24.7% | 1.67 | 33.1% |
+| +250% | −45% | 60m | 19.2% | **−20.9%** | 2.03 | 33.1% |
+
+**Every geometry loses money.** The best of 72 combinations returns −20.9% per
+trade; the worst returns −35.9%. Three things follow, and all of them matter:
+
+**1. The total-loss rate is invariant at 33.1% across every single geometry.**
+Not approximately — identically. Widening the stop from −25% to −60% changes it
+by nothing at all, because these tokens never traded again after the decision
+point. There was no price at which to stop out. This is the same result as §8,
+now confirmed on three times the data and across the whole parameter space.
+
+**2. Taking profit early is the worst thing you can do here.** Expectancy
+improves monotonically as the take-profit widens (−35.2% at +30%, −20.9% at
++250%) and the payoff ratio rises from 0.44 to 2.03. In a distribution where a
+third of trades lose everything, the rare large winner is what pays for them.
+Clipping winners at +30% keeps all of the downside and discards the only thing
+that funds it. This is the exact opposite of the "take profits early and often"
+advice common in retail content.
+
+**3. Stop-loss placement barely matters.** Moving the stop between −25% and −60%
+moves expectancy by around one percentage point. The stop is not where the risk
+is.
+
+The conclusion is uncomfortable but clean: **selection is the entire game.** No
+exit rule, at any setting, makes indiscriminate entry profitable. Combined with
+§10 — that the large multiples are gone within two minutes — the two constraints
+define the system precisely:
+
+- **enter early enough that the upside still exists** (hence the websocket path),
+- **select hard enough to avoid the third of tokens that go to zero** (hence the
+  survival-first model),
+- and then let winners run rather than clipping them.
+
+Caveat: this sample is 447 rows from 77 pools, entering at 3–90 minutes of age.
+It is enough to establish the *shape* — the invariance of the total-loss rate is
+not a small-sample artefact — but not enough to fit parameters to. The specific
+optimum of +250% is not a recommendation; the direction is.

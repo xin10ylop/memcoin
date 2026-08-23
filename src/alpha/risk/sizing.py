@@ -84,7 +84,7 @@ class SizingConfig:
     # would eat a normal winner.
     max_round_trip_cost: float = 0.12
     # Assumed payoff geometry, matching the default label barriers.
-    take_profit: float = 1.50
+    take_profit: float = 2.00
     stop_loss: float = 0.45
 
 

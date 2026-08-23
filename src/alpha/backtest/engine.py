@@ -61,10 +61,10 @@ class BacktestConfig:
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     sizing: SizingConfig = field(default_factory=SizingConfig)
     costs: CostModel = field(default_factory=CostModel)
-    take_profit: float = 1.50
+    take_profit: float = 2.00
     stop_loss: float = 0.45
     trailing_stop: float = 0.35
-    max_hold_min: int = 45
+    max_hold_min: int = 60
     # Positions still open at the end are liquidated at the last price so the
     # reported return reflects a fully closed book.
     liquidate_at_end: bool = True

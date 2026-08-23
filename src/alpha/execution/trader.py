@@ -34,6 +34,7 @@ from alpha.data.store import Store, utcnow
 from alpha.execution.broker import Broker, PaperBroker
 from alpha.features.build import build_features
 from alpha.risk.exits import DumpDetectorConfig, ExitMonitor
+from alpha.signals import Signal, SignalEmitter, build_exit_plan
 from alpha.risk.portfolio import Portfolio, PortfolioConfig, Position, RiskState
 from alpha.risk.sizing import PositionSizer, SizingConfig
 from alpha.safety.screen import SafetyScreener, Verdict
@@ -65,16 +66,24 @@ class TraderConfig:
     max_screens_per_cycle: int = 6
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     sizing: SizingConfig = field(default_factory=SizingConfig)
-    take_profit: float = 1.50
+    take_profit: float = 2.00
     stop_loss: float = 0.45
     trailing_stop: float = 0.35
-    max_hold_min: int = 45
+    max_hold_min: int = 60
     dry_run_only: bool = True
     #: Path-dependent exit rules. A stop-loss cannot protect against a token
     #: that stops trading, so these watch for the dump and the liquidity
     #: withdrawal that precede it.
     exits: DumpDetectorConfig = field(default_factory=DumpDetectorConfig)
     use_dump_exits: bool = True
+    #: Emit machine-readable signals alongside (or instead of) paper trades, so
+    #: an external sniper front-end can execute them. Signals are the product;
+    #: paper trading exists to measure whether they are any good.
+    emit_signals: bool = True
+    signals_path: str = "data/signals.jsonl"
+    #: A signal is invalid once this elapses. Achievable multiples collapse
+    #: within minutes, so a stale signal is a different trade, not a late one.
+    signal_ttl_seconds: int = 90
 
     def max_open(self) -> int:
         return self.portfolio.max_open_positions
@@ -127,6 +136,10 @@ class Trader:
         #: Per-position price/liquidity history, kept outside Position so the
         #: position object does not grow an unbounded buffer.
         self._monitors: dict[str, ExitMonitor] = {}
+        self.emitter = (
+            SignalEmitter(self.cfg.signals_path, echo=False, min_score=self.cfg.min_score)
+            if self.cfg.emit_signals else None
+        )
 
     def request_stop(self, *_: object) -> None:
         log.info("stop requested — will exit after this cycle")
@@ -315,6 +328,14 @@ class Trader:
             self.stats.reject(f"portfolio: {why[:40]}")
             return
 
+        # Emit the signal before executing. The signal is the product; paper
+        # execution exists to measure whether the signal was any good, and an
+        # external sniper front-end may be the thing that actually trades it.
+        if self.emitter is not None:
+            self.emitter.emit(
+                self._build_signal(pool, score, decision, usd, report)
+            )
+
         result = self.broker.buy(
             pool=pool.address, mint=pool.base_mint, usd=usd, price=pool.price_usd,
             liquidity_usd=pool.liquidity_usd, dex=pool.dex, first_buy=True,
@@ -341,6 +362,68 @@ class Trader:
             "ENTER %s $%.2f @ %.3e score=%.3f liq=$%.0f slip=%.2f%% [%s]",
             position.symbol, usd, result.price, score, pool.liquidity_usd,
             100 * result.slippage_pct, pool.dex,
+        )
+
+    def _build_signal(self, pool: Pool, score: float, decision: Any, usd: float, report: Any) -> Signal:
+        """Package a decision as an executable instruction."""
+        reasons: list[str] = []
+        warnings: list[str] = []
+
+        tf = pool.tf("m5")
+        if tf.buyers:
+            reasons.append(f"{tf.buyers} unique buyers in 5m, buy ratio {tf.buy_ratio:.2f}")
+        if pool.liquidity_usd:
+            reasons.append(f"liquidity ${pool.liquidity_usd:,.0f}")
+        if report is not None and getattr(report, "risk_score", 0) == 0:
+            reasons.append("clean safety screen")
+
+        dev_launches = 0
+        dev_wallet = ""
+        launch = self.store.conn.execute(
+            "SELECT dev_wallet FROM launches WHERE mint=?", (pool.base_mint,)
+        ).fetchone()
+        if launch:
+            dev_wallet = launch["dev_wallet"] or ""
+            record = self.store.dev_record(dev_wallet) or {}
+            dev_launches = max(0, int(record.get("launches", 1)) - 1)
+            if dev_launches == 0:
+                reasons.append("deployer has no prior launches on record")
+            elif dev_launches >= 3:
+                warnings.append(f"deployer has launched {dev_launches} tokens before")
+
+        if report is not None and getattr(report, "failures", None):
+            for check in report.failures[:2]:
+                warnings.append(check.name)
+
+        survival = score
+        scorer = getattr(self.scorer, "__self__", None)
+        if scorer is not None and hasattr(scorer, "survival_probability"):
+            history = [dict(r) for r in self.store.snapshots_for(pool.address)] or [pool.to_row()] * 2
+            survival = scorer.survival_probability(build_features(history).values)
+
+        return Signal(
+            mint=pool.base_mint,
+            symbol=pool.name.split("/")[0].strip()[:16],
+            pool=pool.address,
+            dex=pool.dex,
+            score=score,
+            survival_probability=survival,
+            reasons=reasons,
+            warnings=warnings,
+            valid_for_seconds=self.cfg.signal_ttl_seconds,
+            token_age_seconds=pool.age_minutes * 60 if pool.created_at else 0.0,
+            suggested_usd=usd,
+            max_usd=pool.liquidity_usd * self.cfg.sizing.max_pool_fraction,
+            liquidity_usd=pool.liquidity_usd,
+            expected_slippage_pct=getattr(decision, "round_trip_cost", 0.0) / 2,
+            exit_plan=build_exit_plan(
+                take_profit=self.cfg.take_profit, stop_loss=self.cfg.stop_loss,
+                trailing_stop=self.cfg.trailing_stop, max_hold_min=self.cfg.max_hold_min,
+            ),
+            reference_price=pool.price_usd,
+            safety_risk_score=getattr(report, "risk_score", 0.0) if report else 0.0,
+            dev_wallet=dev_wallet,
+            dev_prior_launches=dev_launches,
         )
 
     # -------------------------------------------------------------- reporting
