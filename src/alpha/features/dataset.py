@@ -74,6 +74,7 @@ class DatasetRow:
             {
                 "y_net_return": self.label.net_return,
                 "y_is_win": int(self.label.is_win),
+                "y_survived": int(self.label.survived),
                 "y_barrier": self.label.barrier.value,
                 "y_max_multiple": self.label.max_multiple,
                 "y_minutes_held": self.label.minutes_held,

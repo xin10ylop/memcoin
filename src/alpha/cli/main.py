@@ -191,35 +191,52 @@ def train(
     frame = pd.read_csv(data)
     features = [c for c in FEATURE_NAMES if c in frame.columns]
     X = frame[features].to_numpy(dtype=float)
-    y = frame["y_is_win"].to_numpy(dtype=int)
-    scorer = Scorer()
+
+    from alpha.models.two_stage import TwoStageScorer
+
+    scorer = TwoStageScorer()
     report = scorer.fit(
-        X, y, frame["decision_ts"].to_numpy(dtype=float), frame["pool"].astype(str).tolist(),
-        frame.get("sample_weight"), features,
+        X,
+        frame["y_survived"].to_numpy(dtype=int),
+        frame["y_is_win"].to_numpy(dtype=int),
+        frame["decision_ts"].to_numpy(dtype=float),
+        frame["pool"].astype(str).tolist(),
+        frame.get("sample_weight"),
+        features,
     )
-    colour = "green" if report.beats_baseline else "red"
+    colour = "green" if report.usable else "red"
     console.print(f"\n[bold {colour}]{report.summary()}[/bold {colour}]\n")
     for note in report.notes:
         console.print(f"  [yellow]•[/yellow] {note}")
-    if report.feature_importance:
-        console.print("\n  top features:")
-        for name, weight in list(report.feature_importance.items())[:12]:
-            console.print(f"    {name:28} {weight:.4f}")
+    for stage_name, stage in (("survival", report.survival), ("conditional", report.conditional)):
+        if stage is None:
+            continue
+        console.print(f"\n  [bold]{stage_name} stage[/bold]: {stage.summary()}")
+        for note in stage.notes:
+            console.print(f"    [yellow]•[/yellow] {note}")
+        if stage.feature_importance:
+            top = list(stage.feature_importance.items())[:8]
+            console.print("    top features: " + ", ".join(f"{k}({v:.3f})" for k, v in top))
 
-    if permutation:
-        console.print("\n  running permutation test…")
-        result = scorer.permutation_test(
-            X, y, frame["decision_ts"].to_numpy(dtype=float), frame["pool"].astype(str).tolist()
+    if permutation and report.survival:
+        console.print("\n  running permutation test on the survival stage…")
+        result = scorer.survival.permutation_test(
+            X, frame["y_survived"].to_numpy(dtype=int),
+            frame["decision_ts"].to_numpy(dtype=float), frame["pool"].astype(str).tolist(),
         )
-        console.print(f"    real AUC {result['real_auc']:.4f} vs null max {result['null_auc_max']:.4f}, "
-                      f"p={result['p_value']:.4f} → "
-                      f"{'[green]significant[/green]' if result['significant'] else '[red]not significant[/red]'}")
+        console.print(
+            f"    real AUC {result['real_auc']:.4f} vs null max {result['null_auc_max']:.4f}, "
+            f"p={result['p_value']:.4f} → "
+            f"{'[green]significant[/green]' if result['significant'] else '[red]not significant[/red]'}"
+        )
 
-    if report.beats_baseline:
+    if report.usable:
         scorer.save(out)
         console.print(f"\n  saved to {out}")
     else:
-        console.print("\n  [red]Model not saved: it does not beat the baseline.[/red]")
+        console.print("\n  [red]Model not saved: neither stage beats its baseline.[/red]")
+        console.print("  [dim]This is a legitimate result, not an error. Collect more data "
+                      "and retrain.[/dim]")
         raise typer.Exit(1)
 
 
@@ -246,9 +263,7 @@ def trade(
 
     scorer_fn = None
     if model and Path(model).exists():
-        from alpha.models.scorer import Scorer
-        loaded = Scorer.load(model)
-        scorer_fn = loaded.score_features
+        scorer_fn = _load_scorer(model)
         console.print(f"[dim]loaded model from {model}[/dim]")
     else:
         console.print("[yellow]No model supplied — running in observe-only mode. "
@@ -286,9 +301,7 @@ def backtest(
     features = [c for c in FEATURE_NAMES if c in frame.columns]
 
     if model and Path(model).exists():
-        from alpha.models.scorer import Scorer
-        loaded = Scorer.load(model)
-        score_fn = loaded.score_features
+        score_fn = _load_scorer(model)
     else:
         console.print("[yellow]No model — scoring every candidate at a constant 0.35 "
                       "to measure the strategy's structural edge without a model.[/yellow]")
@@ -321,6 +334,17 @@ def backtest(
         console.print("  rejections:")
         for reason, count in sorted(result.rejected.items(), key=lambda kv: -kv[1])[:10]:
             console.print(f"    {count:>5}  {reason}")
+
+
+def _load_scorer(path: str):
+    """Load either scorer type — two-stage is preferred, single-stage still works."""
+    from alpha.models.scorer import Scorer
+    from alpha.models.two_stage import TwoStageScorer
+
+    try:
+        return TwoStageScorer.load(path).score_features
+    except (KeyError, AttributeError, TypeError):
+        return Scorer.load(path).score_features
 
 
 def main() -> None:

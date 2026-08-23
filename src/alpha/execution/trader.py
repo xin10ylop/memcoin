@@ -33,6 +33,7 @@ from alpha.data.geckoterminal import GeckoTerminalClient, Pool
 from alpha.data.store import Store, utcnow
 from alpha.execution.broker import Broker, PaperBroker
 from alpha.features.build import build_features
+from alpha.risk.exits import DumpDetectorConfig, ExitMonitor
 from alpha.risk.portfolio import Portfolio, PortfolioConfig, Position, RiskState
 from alpha.risk.sizing import PositionSizer, SizingConfig
 from alpha.safety.screen import SafetyScreener, Verdict
@@ -69,6 +70,11 @@ class TraderConfig:
     trailing_stop: float = 0.35
     max_hold_min: int = 45
     dry_run_only: bool = True
+    #: Path-dependent exit rules. A stop-loss cannot protect against a token
+    #: that stops trading, so these watch for the dump and the liquidity
+    #: withdrawal that precede it.
+    exits: DumpDetectorConfig = field(default_factory=DumpDetectorConfig)
+    use_dump_exits: bool = True
 
     def max_open(self) -> int:
         return self.portfolio.max_open_positions
@@ -118,6 +124,9 @@ class Trader:
         self.stats = TraderStats()
         self._stop = False
         self._screened_cache: set[str] = set()
+        #: Per-position price/liquidity history, kept outside Position so the
+        #: position object does not grow an unbounded buffer.
+        self._monitors: dict[str, ExitMonitor] = {}
 
     def request_stop(self, *_: object) -> None:
         log.info("stop requested — will exit after this cycle")
@@ -181,13 +190,27 @@ class Trader:
                 # transient API gap is not mistaken for a rug.
                 if pos.age_minutes(now) >= pos.max_hold_min * 2:
                     self.portfolio.close(pool_addr, 0.0, "went_dark", now)
+                    self._monitors.pop(pool_addr, None)
                     self.stats.exited += 1
                     log.warning("position %s written off: pool went dark", pool_addr[:12])
                 continue
 
             price = live.price_usd
             pos.mark(price)
+
+            monitor = self._monitors.get(pool_addr)
+            if monitor is not None:
+                monitor.update(price, live.liquidity_usd)
+
             reason = pos.exit_signal(price, now)
+            if reason is None and self.cfg.use_dump_exits and monitor is not None:
+                # Path-dependent rules run only when the barrier rules are
+                # silent: a dump large enough to breach the stop is already
+                # handled, and this catches the ones that are not.
+                signal = monitor.check()
+                if signal.triggered:
+                    reason = "dump_exit"
+                    log.warning("dump exit on %s: %s", pos.symbol, signal.reason)
             if not reason:
                 continue
 
@@ -197,6 +220,7 @@ class Trader:
             )
             proceeds = result.usd if result.ok else 0.0
             trade = self.portfolio.close(pool_addr, proceeds, reason, now)
+            self._monitors.pop(pool_addr, None)
             self.stats.exited += 1
             if trade:
                 log.info(
@@ -309,6 +333,9 @@ class Trader:
             meta={"score": score, "risk_score": report.risk_score},
         )
         self.portfolio.open(position, usd + result.fee_usd)
+        monitor = ExitMonitor(config=self.cfg.exits)
+        monitor.update(result.price, pool.liquidity_usd)
+        self._monitors[pool.address] = monitor
         self.stats.entered += 1
         log.info(
             "ENTER %s $%.2f @ %.3e score=%.3f liq=$%.0f slip=%.2f%% [%s]",
