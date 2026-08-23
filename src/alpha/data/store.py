@@ -602,6 +602,24 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
+    def link_launches_to_pools(self) -> int:
+        """Match stream-observed launches to discovered pools by mint.
+
+        Costs nothing: the collector already records ``base_mint`` for every
+        pool, so the join is local. This is what makes the t=0 cohort
+        measurable — the launch supplies the deployer, bundle size and exact
+        curve state at creation, and the pool supplies the subsequent price
+        path.
+        """
+        with self.connect() as con:
+            cur = con.execute(
+                """UPDATE launches
+                   SET pool = (SELECT p.pool FROM pools p WHERE p.base_mint = launches.mint)
+                   WHERE pool IS NULL
+                     AND EXISTS (SELECT 1 FROM pools p WHERE p.base_mint = launches.mint)"""
+            )
+            return cur.rowcount
+
     def link_launch_to_pool(self, mint: str, pool: str) -> None:
         with self.connect() as con:
             con.execute("UPDATE launches SET pool=? WHERE mint=? AND pool IS NULL", (pool, mint))

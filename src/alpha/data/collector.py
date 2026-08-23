@@ -72,6 +72,7 @@ class CollectorStats:
     trades: int = 0
     retired: int = 0
     errors: int = 0
+    linked: int = 0
     started_at: datetime = field(default_factory=utcnow)
 
     def as_dict(self) -> dict[str, Any]:
@@ -83,6 +84,7 @@ class CollectorStats:
             "trades": self.trades,
             "retired": self.retired,
             "errors": self.errors,
+            "linked": self.linked,
             "elapsed_min": round(elapsed / 60, 2),
             "pools_per_hour": round(self.discovered / max(elapsed / 3600, 1e-9), 1),
         }
@@ -162,6 +164,12 @@ class Collector:
         discovery_budget = max(1, int(budget * self.cfg.discovery_share))
         self.discover(pages=min(self.cfg.discovery_pages, discovery_budget))
         self.track(budget=budget - discovery_budget)
+        # Free: joins stream-observed launches to discovered pools locally,
+        # with no API calls.
+        linked = self.store.link_launches_to_pools()
+        if linked:
+            self.stats.linked += linked
+            log.debug("linked %d launches to pools", linked)
 
     # --------------------------------------------------------------- discovery
 
