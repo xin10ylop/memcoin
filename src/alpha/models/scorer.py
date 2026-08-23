@@ -116,6 +116,8 @@ class Scorer:
         self.cfg = config or TrainConfig()
         self.model: Any = None
         self.calibrator: Any = None
+        #: (model, scaler, calibrator) per fold. Averaged at inference.
+        self.ensemble: list[tuple[Any, Any, Any]] = []
         self.feature_names: list[str] = list(FEATURE_NAMES)
         self.base_rate: float = 0.0
         self.report: TrainReport | None = None
@@ -225,24 +227,57 @@ class Scorer:
         beats, gate_notes = self._evaluate_gates(aucs, auc_mean, brier, brier_base)
         notes.extend(gate_notes)
 
-        # Refit the chosen model on all data for live inference.
-        final = candidates[best_name]()
-        Xfit = X
-        if best_name == "logistic":
-            self._scaler = StandardScaler().fit(X)
-            Xfit = self._scaler.transform(X)
-        else:
-            self._scaler = None
-        final.fit(Xfit, y, sample_weight=weights)
-        self.model = final
+        # Build the inference ensemble.
+        #
+        # A single model refit on all data CANNOT be used with a calibrator
+        # fitted on out-of-fold predictions: the refit model is scoring its own
+        # training data at inference time, so its output distribution is far
+        # more confident than the out-of-fold distribution the isotonic map was
+        # built from. With ``out_of_bounds="clip"`` every prediction then lands
+        # above the calibrator's fitted range and clips to one value — the model
+        # silently returns a constant while still reporting a healthy AUC.
+        #
+        # This was observed: a model reporting AUC 0.626 returned 0.5586 for
+        # every row, destroying all ranking information without raising anything.
+        #
+        # The fix is the standard one: keep each fold's model, pair it with a
+        # calibrator fitted on that fold's held-out predictions, and average the
+        # calibrated outputs at inference. Every calibrator is then applied to
+        # exactly the distribution it was built for.
+        self.ensemble = []
+        for train_idx, test_idx in folds:
+            if len(np.unique(y[train_idx])) < 2 or len(test_idx) < 10:
+                continue
+            model = candidates[best_name]()
+            scaler = None
+            Xtr, Xte = X[train_idx], X[test_idx]
+            if best_name == "logistic":
+                scaler = StandardScaler().fit(Xtr)
+                Xtr, Xte = scaler.transform(Xtr), scaler.transform(Xte)
+            try:
+                model.fit(Xtr, y[train_idx], sample_weight=weights[train_idx])
+                held_out = model.predict_proba(Xte)[:, 1]
+            except Exception as exc:
+                log.debug("ensemble member failed: %s", exc)
+                continue
+            if len(np.unique(y[test_idx])) < 2:
+                continue
+            member_cal = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+            member_cal.fit(held_out, y[test_idx])
+            self.ensemble.append((model, scaler, member_cal))
+
+        if not self.ensemble:
+            notes.append("no ensemble member could be built; predictions fall back to the base rate")
+        self.model = self.ensemble[0][0] if self.ensemble else None
         self.calibrator = iso
+        self._scaler = None
 
         self.report = TrainReport(
             n_samples=n, n_features=n_feat, n_pools=len(set(groups)), base_rate=self.base_rate,
             auc_mean=auc_mean, auc_std=float(np.std(aucs)) if aucs else 0.0,
             auc_folds=[round(a, 4) for a in aucs], brier=brier, brier_baseline=brier_base,
             logloss=ll, logloss_baseline=ll_base, beats_baseline=bool(beats), model_kind=best_name,
-            feature_importance=self._importance(final, best_name),
+            feature_importance=self._ensemble_importance(best_name),
             calibration_bins=_calibration_table(y[mask], calibrated),
             notes=notes,
         )
@@ -363,6 +398,23 @@ class Scorer:
             log.info("lightgbm unavailable; using logistic regression only")
         return candidates
 
+    def _ensemble_importance(self, kind: str) -> dict[str, float]:
+        """Feature importance averaged across ensemble members.
+
+        Averaging matters: a single fold can rank a feature highly by accident,
+        and reporting that one fold's view would misdescribe what the model
+        actually uses at inference, which is the average of all of them.
+        """
+        if not self.ensemble:
+            return {}
+        totals: dict[str, float] = {}
+        for model, _scaler, _cal in self.ensemble:
+            for name, weight in self._importance(model, kind).items():
+                totals[name] = totals.get(name, 0.0) + weight
+        n = float(len(self.ensemble))
+        ranked = sorted(((k, v / n) for k, v in totals.items()), key=lambda kv: kv[1], reverse=True)
+        return {k: round(v, 5) for k, v in ranked[:25]}
+
     def _importance(self, model: Any, kind: str) -> dict[str, float]:
         try:
             if kind == "logistic":
@@ -380,16 +432,27 @@ class Scorer:
     # ------------------------------------------------------------------ score
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        """Calibrated win probabilities. Falls back to the base rate if untrained."""
-        if self.model is None:
-            return np.full(len(X), self.base_rate)
+        """Calibrated probabilities, averaged over the fold ensemble.
+
+        Falls back to the base rate when no ensemble was built, which is an
+        honest "no opinion" rather than a fabricated one.
+        """
         X = np.asarray(X, dtype=float)
-        if getattr(self, "_scaler", None) is not None:
-            X = self._scaler.transform(X)
-        raw = self.model.predict_proba(X)[:, 1]
-        if self.calibrator is not None:
-            raw = self.calibrator.predict(raw)
-        return np.clip(raw, 0.0, 1.0)
+        ensemble = getattr(self, "ensemble", None)
+        if not ensemble:
+            return np.full(len(X), self.base_rate)
+
+        predictions = []
+        for model, scaler, calibrator in ensemble:
+            Xm = scaler.transform(X) if scaler is not None else X
+            try:
+                raw = model.predict_proba(Xm)[:, 1]
+            except Exception:
+                continue
+            predictions.append(calibrator.predict(raw))
+        if not predictions:
+            return np.full(len(X), self.base_rate)
+        return np.clip(np.mean(predictions, axis=0), 0.0, 1.0)
 
     def score_features(self, features: dict[str, float]) -> float:
         """Score a single feature dict, in the canonical feature order."""
@@ -407,6 +470,7 @@ class Scorer:
             pickle.dump(
                 {
                     "model": self.model, "calibrator": self.calibrator,
+                    "ensemble": self.ensemble,
                     "scaler": getattr(self, "_scaler", None),
                     "feature_names": self.feature_names, "base_rate": self.base_rate,
                     "report": self.report.to_dict() if self.report else None,
@@ -423,6 +487,7 @@ class Scorer:
         scorer = cls()
         scorer.model = blob["model"]
         scorer.calibrator = blob["calibrator"]
+        scorer.ensemble = blob.get("ensemble") or []
         scorer._scaler = blob.get("scaler")
         scorer.feature_names = blob["feature_names"]
         scorer.base_rate = blob["base_rate"]

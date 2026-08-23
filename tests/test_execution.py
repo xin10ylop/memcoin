@@ -122,3 +122,28 @@ def test_breakeven_matches_the_analytic_expression():
     cost = 0.06
     expected = (cfg.stop_loss + cost) / (cfg.take_profit + cfg.stop_loss)
     assert sizer.breakeven_win_prob(cost) == pytest.approx(expected)
+
+
+def test_calibrated_scorer_preserves_ranking():
+    """Regression: a calibrator fitted on out-of-fold predictions but applied to
+    a model refit on all data clipped every prediction to one value, silently
+    destroying ranking while still reporting a healthy AUC."""
+    import numpy as np
+
+    from alpha.models.scorer import Scorer, TrainConfig
+
+    rng = np.random.default_rng(0)
+    n_pools, per = 120, 5
+    groups = np.repeat([f"p{i}" for i in range(n_pools)], per)
+    times = np.repeat(np.sort(rng.uniform(0, 5 * 86400, n_pools)), per)
+    X = rng.normal(size=(n_pools * per, 12))
+    logit = 1.2 * X[:, 0] - 0.8 * X[:, 4]
+    y = (rng.uniform(size=len(X)) < 1 / (1 + np.exp(-logit))).astype(int)
+
+    scorer = Scorer(TrainConfig(n_splits=4))
+    scorer.fit(X, y, times, list(groups), feature_names=[f"f{i}" for i in range(12)])
+    preds = scorer.predict_proba(X)
+
+    assert scorer.ensemble, "an inference ensemble should have been built"
+    assert preds.std() > 0.01, "predictions collapsed to a constant"
+    assert len(np.unique(np.round(preds, 4))) > 5
