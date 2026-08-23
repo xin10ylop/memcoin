@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DAEMONS = {
     "collector": "run_collector.py",
     "backfill": "backfill_candles.py",
+    "launchstream": "run_launchstream.py",
 }
 
 

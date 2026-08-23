@@ -320,3 +320,78 @@ look paranoid — they were tuned against a known-null case, not against a hope.
 
 The system will report "NO EDGE — do not trade" and refuse to save a model that
 does not clear them. That outcome is a legitimate result, not a bug.
+
+
+---
+
+## 10. Where the 10x–30x actually lives: entry timing, not filtering
+
+This is the answer to "how do people get 20x?", measured on our own panel
+(30 pools with ≥8 minutes of minute-candle history — a small sample, but the
+pattern is monotonic and very strong).
+
+**Best multiple achievable, by how late you enter:**
+
+| Entry | median | p90 | max observed | reached ≥2x | ≥5x | ≥10x |
+|---|---|---|---|---|---|---|
+| **launch candle** | 2.17x | 20.4x | **318x** | 56.7% | 33.3% | **20.0%** |
+| +1 min | 1.74x | 8.6x | 12.3x | 43.3% | 26.7% | 6.7% |
+| +2 min | 1.65x | 7.1x | 7.3x | 43.3% | 23.3% | **0%** |
+| +3 min | 1.58x | 5.7x | 6.0x | 36.7% | 23.3% | 0% |
+| +5 min | 1.44x | 4.5x | 4.6x | 36.7% | **0%** | 0% |
+| +15 min | 1.33x | 4.1x | 4.9x | 29.2% | 0% | 0% |
+| +30 min | 1.17x | 2.1x | 2.2x | 10.0% | 0% | 0% |
+
+**The entire 10x opportunity is gone within two minutes.** From a 2-minute
+entry the best outcome in the whole sample was 7.3x; from 5 minutes, 4.6x; from
+30 minutes, 2.2x.
+
+This settles a question that filter-based strategies implicitly get wrong. The
+big multiples are not a filtering achievement — they are an *entry-timing*
+achievement. No screening rule applied at minute five can recover a 10x, because
+by minute five the 10x no longer exists in the price path. Filters change *which*
+of the available outcomes you get; they cannot change what is available.
+
+Combined with the 14.696x bonding-curve ceiling (§2a), the decomposition of any
+claimed 30x is:
+
+1. **Bought in the launch block or first seconds** — requires sniper
+   infrastructure, or being the deployer.
+2. **Held through graduation into PumpSwap**, where the cap no longer applies.
+3. **Measured from a price ordinary buyers could not get** — deployer,
+   bundler or same-block sniper allocation.
+
+None of these is "found a better filter".
+
+### What this changed in the system
+
+The polling collector discovers pools from GeckoTerminal at **1–15 minutes old**,
+which the table above shows is structurally too late for anything above ~5x. So
+a second, low-latency path was added: `alpha.data.pumpportal` consumes the
+PumpPortal websocket and records pump.fun creations **within seconds**, carrying
+
+- `traderPublicKey` — the deployer wallet, at deployment,
+- `solAmount` — the deployer's own buy, i.e. bundle size, known immediately
+  rather than inferred later from holder distributions,
+- `vSolInBondingCurve` — exact curve state, feeding the curve model with no
+  estimation,
+- `uri` — metadata, so static social presence is scorable before the first trade.
+
+Measured launch rate: **~6.7 pump.fun creations/minute (~9.6k/day)**, against
+~20k/day new pools across all Solana venues.
+
+Seeing every deployer at creation also accumulates something no vendor sells:
+a first-hand record of which wallets launch which tokens and how they turn out.
+Deployer history is the strongest free rug signal available, and after running
+this stream it is measured rather than bought.
+
+### The honest constraint
+
+Being *fast* is necessary but not sufficient. Published latency work puts the
+first-block game at sub-60ms detect-to-submit for competitive snipers, against
+~800ms for a public-RPC path — and that game is contested by well-capitalised
+operators. A websocket feed plus a public RPC does not win block zero.
+
+What it does reach is the **first 30–60 seconds**, where latency still matters
+but is no longer the sole determinant, and where the table above still shows
+5–10x outcomes present. That is the window this system is now built for.

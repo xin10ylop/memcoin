@@ -144,6 +144,54 @@ CREATE TABLE IF NOT EXISTS artifacts (
     PRIMARY KEY (kind, key)
 );
 
+-- Token creations observed live on the PumpPortal websocket, recorded at t=0.
+-- This is the low-latency cohort: the polling collector sees pools at 1-15
+-- minutes old, which measurement showed is already too late for large
+-- multiples. These rows are written within seconds of deployment.
+CREATE TABLE IF NOT EXISTS launches (
+    mint            TEXT PRIMARY KEY,
+    name            TEXT,
+    symbol          TEXT,
+    uri             TEXT,
+    dev_wallet      TEXT,
+    signature       TEXT,
+    bonding_curve   TEXT,
+    pool_kind       TEXT,
+    dev_buy_sol     REAL,
+    dev_tokens      REAL,
+    dev_curve_share REAL,
+    v_sol           REAL,
+    v_tokens        REAL,
+    market_cap_sol  REAL,
+    observed_at     TEXT NOT NULL,
+    -- Filled in later, once the token is matched to a tradeable pool.
+    pool            TEXT,
+    graduated_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_launch_dev ON launches(dev_wallet);
+CREATE INDEX IF NOT EXISTS idx_launch_time ON launches(observed_at);
+CREATE INDEX IF NOT EXISTS idx_launch_pool ON launches(pool);
+
+-- Graduations to PumpSwap. Rare, and the gateway to multiples above the
+-- 14.696x bonding-curve ceiling.
+CREATE TABLE IF NOT EXISTS migrations (
+    mint            TEXT PRIMARY KEY,
+    signature       TEXT,
+    pool            TEXT,
+    observed_at     TEXT NOT NULL
+);
+
+-- Deployer track record, accumulated first-hand from the launch stream rather
+-- than bought. Deployer history is the strongest free rug signal available.
+CREATE TABLE IF NOT EXISTS dev_wallets (
+    dev_wallet      TEXT PRIMARY KEY,
+    first_seen      TEXT,
+    last_seen       TEXT,
+    launches        INTEGER DEFAULT 0,
+    graduations     INTEGER DEFAULT 0,
+    total_dev_buy_sol REAL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -492,6 +540,87 @@ class Store:
             "earliest": one("SELECT MIN(discovered_at) FROM pools"),
             "latest": one("SELECT MAX(discovered_at) FROM pools"),
             "db_mb": round(self.path.stat().st_size / 1e6, 2) if self.path.exists() else 0,
+        }
+
+    # ------------------------------------------------------- launch stream
+
+    def record_launch(self, launch: Any) -> bool:
+        """Persist a launch and update the deployer's running record.
+
+        Returns True if this mint was new. The deployer counters are updated in
+        the same transaction so the track record can never drift from the
+        launch table.
+        """
+        row = launch.to_row()
+        with self.connect() as con:
+            cur = con.execute(
+                """INSERT OR IGNORE INTO launches
+                   (mint, name, symbol, uri, dev_wallet, signature, bonding_curve, pool_kind,
+                    dev_buy_sol, dev_tokens, dev_curve_share, v_sol, v_tokens, market_cap_sol,
+                    observed_at)
+                   VALUES (:mint,:name,:symbol,:uri,:dev_wallet,:signature,:bonding_curve,
+                           :pool_kind,:dev_buy_sol,:dev_tokens,:dev_curve_share,:v_sol,
+                           :v_tokens,:market_cap_sol,:observed_at)""",
+                row,
+            )
+            is_new = cur.rowcount > 0
+            if is_new and row["dev_wallet"]:
+                con.execute(
+                    """INSERT INTO dev_wallets (dev_wallet, first_seen, last_seen, launches, total_dev_buy_sol)
+                       VALUES (?,?,?,1,?)
+                       ON CONFLICT(dev_wallet) DO UPDATE SET
+                           last_seen = excluded.last_seen,
+                           launches = launches + 1,
+                           total_dev_buy_sol = total_dev_buy_sol + excluded.total_dev_buy_sol""",
+                    (row["dev_wallet"], row["observed_at"], row["observed_at"], row["dev_buy_sol"]),
+                )
+        return is_new
+
+    def record_migration(self, migration: Any) -> bool:
+        with self.connect() as con:
+            cur = con.execute(
+                "INSERT OR IGNORE INTO migrations (mint, signature, pool, observed_at) VALUES (?,?,?,?)",
+                (migration.mint, migration.signature, migration.pool, iso(migration.observed_at)),
+            )
+            is_new = cur.rowcount > 0
+            if is_new:
+                con.execute(
+                    "UPDATE launches SET graduated_at=? WHERE mint=?",
+                    (iso(migration.observed_at), migration.mint),
+                )
+                con.execute(
+                    """UPDATE dev_wallets SET graduations = graduations + 1
+                       WHERE dev_wallet = (SELECT dev_wallet FROM launches WHERE mint=?)""",
+                    (migration.mint,),
+                )
+        return is_new
+
+    def dev_record(self, dev_wallet: str) -> dict[str, Any] | None:
+        """Our own first-hand record for a deployer."""
+        row = self.conn.execute(
+            "SELECT * FROM dev_wallets WHERE dev_wallet=?", (dev_wallet,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def link_launch_to_pool(self, mint: str, pool: str) -> None:
+        with self.connect() as con:
+            con.execute("UPDATE launches SET pool=? WHERE mint=? AND pool IS NULL", (pool, mint))
+
+    def launch_stats(self) -> dict[str, Any]:
+        c = self.conn
+        def one(sql: str) -> Any:
+            r = c.execute(sql).fetchone()
+            return r[0] if r else 0
+        return {
+            "launches": one("SELECT COUNT(*) FROM launches"),
+            "migrations": one("SELECT COUNT(*) FROM migrations"),
+            "dev_wallets": one("SELECT COUNT(*) FROM dev_wallets"),
+            "repeat_devs": one("SELECT COUNT(*) FROM dev_wallets WHERE launches > 1"),
+            "linked_to_pool": one("SELECT COUNT(*) FROM launches WHERE pool IS NOT NULL"),
+            "graduation_rate": round(
+                (one("SELECT COUNT(*) FROM launches WHERE graduated_at IS NOT NULL")
+                 / max(1, one("SELECT COUNT(*) FROM launches"))), 5
+            ),
         }
 
     def close(self) -> None:
