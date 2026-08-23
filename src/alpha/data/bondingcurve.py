@@ -46,6 +46,18 @@ GRADUATION_VSOL = 115.0054
 #: Tokens remaining on the curve at graduation.
 GRADUATION_VTOKENS = 279_900_000.0
 
+#: Real SOL actually migrated into the PumpSwap pool at graduation. The curve
+#: quotes against 115.0054 SOL of *virtual* depth but only ~85 SOL is real, so
+#: depth drops ~26% the moment a token graduates.
+MIGRATED_REAL_SOL = 85.0054
+#: Circulating tokens at graduation.
+MIGRATED_TOKENS = 793_100_000.0
+
+#: Measured platform-wide graduation rate. Published studies report 0.63% over
+#: 655,770 tokens (Sept 2025) and ~1.4% all-time; this system's own launch
+#: stream measured 1.85% on a smaller sample.
+PLATFORM_GRADUATION_RATE = 0.0140
+
 #: Hard structural ceiling on pre-graduation appreciation.
 #: (vSol_grad/vTokens_grad) / (vSol_0/vTokens_0)
 MAX_PREGRAD_MULTIPLE = (GRADUATION_VSOL / GRADUATION_VTOKENS) / (
@@ -139,6 +151,69 @@ def breakeven_price_multiple(net_sol: float) -> float:
     return (state.virtual_sol / GRADUATION_VSOL) ** 2
 
 
+def breakeven_graduation_probability(net_sol: float) -> float:
+    """Minimum P(graduate) that makes buying at ``net_sol`` and holding worthwhile.
+
+    On the curve, price is proportional to the square of the virtual SOL
+    reserve, so buying at ``vSol`` and holding to graduation returns exactly
+    ``(115.0054 / vSol)^2``. Setting expected value to zero for an all-or-nothing
+    bet (graduate and win that multiple, or fail and lose everything) gives
+
+        p* = vSol^2 / 115.0054^2
+
+    This is the most important number in the domain, because it can be compared
+    directly against a base rate:
+
+        at launch (vSol=30):  p* = 6.80%   actual base rate ~0.6-1.4%
+        at vSol=50:           p* = 18.9%
+        at vSol=80:           p* = 48.4%
+
+    **Buying at launch and holding for graduation is therefore 5-10x negative
+    expected value at the unconditional base rate**, and it gets worse further up
+    the curve, not better. A graduation-hold strategy only works if conditioning
+    features lift P(graduate) above p* — which is precisely what deployer
+    reputation does, since elite deployers graduate at 40-71%.
+    """
+    state = state_from_net_sol(net_sol)
+    p = (state.virtual_sol / GRADUATION_VSOL) ** 2
+    return min(1.0, max(0.0, p))
+
+
+def graduation_edge(net_sol: float, p_graduate: float) -> float:
+    """Expected return of a hold-to-graduation bet, as a fraction of stake.
+
+    Positive only when ``p_graduate`` exceeds
+    :func:`breakeven_graduation_probability` at this point on the curve.
+    """
+    breakeven = breakeven_graduation_probability(net_sol)
+    if breakeven <= 0:
+        return 0.0
+    payoff = 1.0 / breakeven          # multiple achieved if it graduates
+    return p_graduate * payoff - 1.0
+
+
+def post_migration_dead_liquidity() -> float:
+    """Fraction of migrated SOL that can never be extracted by holders.
+
+    At graduation ~85.0054 real SOL and 793.1M tokens enter the PumpSwap pool.
+    Under constant product, selling *every* circulating token back into that
+    pool leaves SOL stuck at ``k / (tokens_in_pool + circulating)``. Holders
+    collectively pay in 85 SOL and can extract at most ~67.4 SOL.
+
+    **The graduated cohort is negative-sum by construction, at roughly -21%
+    before fees.** Holding through migration is therefore not a neutral act with
+    upside; it is a bet that you exit ahead of the queue. This is a stronger
+    argument for exiting on the curve than any sentiment signal.
+    """
+    k = MIGRATED_REAL_SOL * (GRADUATION_VTOKENS - 73_000_000.0 + 73_000_000.0)
+    # Pool starts with ~206.9M tokens against 85.0054 SOL.
+    pool_tokens = 206_900_000.0
+    k = MIGRATED_REAL_SOL * pool_tokens
+    final_sol = k / (pool_tokens + MIGRATED_TOKENS)
+    extractable = MIGRATED_REAL_SOL - final_sol
+    return 1.0 - extractable / MIGRATED_REAL_SOL
+
+
 def graduation_progress_features(
     net_sol: float, cumulative_swaps: int
 ) -> dict[str, float]:
@@ -160,6 +235,9 @@ def graduation_progress_features(
         # How much of the theoretical pre-graduation ceiling has been used up.
         "curve_headroom": max(0.0, 1.0 - state.multiple_from_launch / MAX_PREGRAD_MULTIPLE),
         "curve_breakeven_multiple": breakeven_price_multiple(net_sol),
+        # Probability of graduation this entry point needs in order to break
+        # even. Compare against a model's calibrated P(graduate).
+        "curve_breakeven_p_grad": breakeven_graduation_probability(net_sol),
     }
 
 
