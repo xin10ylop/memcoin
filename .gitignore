@@ -1,0 +1,35 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Data — never commit collected data or caches
+data/raw/*
+data/processed/*
+data/cache/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/cache/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+*.jsonl.gz
+
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.key
+*keypair*.json
+secrets.yaml
+config/local.yaml
