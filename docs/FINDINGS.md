@@ -522,3 +522,92 @@ bootstrap and cannot be copied by a competitor who has not been recording.
 - **Unmeasured and worth measuring:** the lag between a KOL's on-chain buy and
   their post is not published anywhere. If the median is under ~2s the channel
   is worthless. This is cheap to measure first-hand and nobody has.
+
+
+---
+
+## 11. The exact economics of a hold-to-graduation bet
+
+Price on the pump.fun curve is proportional to the **square** of the virtual SOL
+reserve. Buying at `vSol` and holding to graduation therefore returns exactly
+`(115.0054 / vSol)²`, which fixes the break-even probability:
+
+```
+p* = vSol² / 115.0054²
+```
+
+| Net SOL raised | vSol | Multiple if it graduates | Break-even P(grad) | EV at 1.4% base rate |
+|---|---|---|---|---|
+| 0 (launch) | 30.0 | 14.70x | **6.80%** | −79% |
+| 5 | 35.0 | 10.80x | 9.26% | −85% |
+| 20 | 50.0 | 5.29x | 18.90% | −93% |
+| 40 | 70.0 | 2.70x | 37.05% | −96% |
+| 70 | 100.0 | 1.32x | 75.61% | −98% |
+
+Published graduation rates are 0.63% (655,770-token study) to ~1.4% all-time.
+**This system's own launch stream has now measured 1.85% first-hand** across 542
+launches and 24 graduations.
+
+Against a 6.80% break-even, **an unconditional hold-to-graduation bet is roughly
+five times short of viable — and it gets worse further up the curve**, because
+the remaining multiple shrinks quadratically while the required probability
+rises. This is the exact-arithmetic counterpart to the empirical entry-decay
+measurement in §10: two independent routes to the same conclusion.
+
+### What closes the gap
+
+Only one conditioning variable has enough lift:
+
+| P(graduate) | EV at launch | EV at 30 SOL raised |
+|---|---|---|
+| 1.4% (base rate) | −79% | −95% |
+| 10% (good deployer) | +47% | −63% |
+| 40% (elite deployer) | +488% | +47% |
+| 71% (top-tier deployer) | +943% | +161% |
+
+Published work puts elite pump.fun deployers at **40–71% graduation against a
+0.63–2% base — a lift of 20 to 100x**, available before the token has traded at
+all. That is why `alpha.features.deployer` exists and why its posterior feeds
+`alpha.risk.ev_gate` directly.
+
+Note what the second column says: even an elite deployer stops being worth
+trading once the token is 30 SOL up the curve. **Being right about the token is
+not sufficient; you also have to be early.**
+
+### Post-migration is negative-sum by construction
+
+At graduation roughly 85.0054 real SOL and 793.1M tokens enter the PumpSwap pool.
+Under constant product, selling every circulating token back into that pool
+leaves SOL permanently stuck: holders collectively pay in 85 SOL and can extract
+at most ~67.4 SOL.
+
+```
+dead liquidity = 20.7% of migrated SOL
+```
+
+Holding through migration is therefore not a neutral act with upside — it is a
+bet that you exit ahead of the queue. Depth also drops ~26% at migration (the
+curve quotes against 115 SOL of virtual depth, the pool receives ~85 real), so
+the same-sized exit costs more afterwards. The default exit policy is to leave
+**on the curve**, before graduation.
+
+## 12. What the scanner actually does, and why it stays silent
+
+`alpha.execution.launch_scanner` applies the above to live launches. Run against
+400 real launches from the panel it emitted **zero signals**:
+
+| Rejection reason | Count |
+|---|---|
+| expected value below break-even | 199 |
+| deployer has fewer than 3 prior launches | 181 |
+| deployer allocation too large | 16 |
+
+This is the correct output, not a defect. Of 342 deployers tracked so far, **65%
+have exactly one launch**, and eight show a "100% graduation rate" from a single
+launch apiece — which is what luck looks like when you screen hundreds of
+wallets. The shrunk lower bound refuses them, as it should.
+
+**The deployer edge is a slow-building asset.** It requires weeks of stream data
+before any wallet has enough history to clear the gate. The system is designed to
+say nothing until it does, and a sanity check flags any signal rate above 2% as
+evidence that something is broken rather than that something was found.
