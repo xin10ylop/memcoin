@@ -33,3 +33,13 @@ data/cache/*
 *keypair*.json
 secrets.yaml
 config/local.yaml
+
+# SQLite sidecar files
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Runtime logs and pidfiles
+logs/
+*.log
+*.pid

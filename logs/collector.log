@@ -1,9 +1,0 @@
-2026-08-23 10:13:54,560 INFO alpha.data.collector: collector starting: 25 req/min, 10 discovery pages, 60s cycles
-2026-08-23 10:14:57,011 ERROR alpha.http: giving up on https://api.geckoterminal.com/api/v2/networks/solana/new_pools after 5 attempts (None)
-2026-08-23 10:16:10,216 INFO alpha.data.collector: stop requested — finishing current cycle
-2026-08-23 10:16:25,991 INFO alpha.data.collector: stop requested — finishing current cycle
-2026-08-23 10:18:25,866 INFO alpha.data.collector: collector stopped: {'cycles': 3, 'discovered': 189, 'snapshots': 434, 'trades': 900, 'retired': 0, 'errors': 0, 'elapsed_min': 4.52, 'pools_per_hour': 2507.9}
-2026-08-23 10:31:13,840 INFO alpha.data.collector: collector stats: {'cycles': 5, 'discovered': 152, 'snapshots': 1447, 'trades': 3000, 'retired': 55, 'errors': 0, 'elapsed_min': 14.44, 'pools_per_hour': 631.6} | store: {'pools': 341, 'sol_quoted': 341, 'snapshots': 1881, 'trades': 3300, 'wallets': 854, 'candles': 0, 'outcomes': 0, 'tracking_active': 286, 'tracking_retired': 55, 'earliest': '2026-08-23T10:14:37.855861+00:00', 'latest': '2026-08-23T10:29:25.066088+00:00', 'db_mb': 2.64}
-2026-08-23 10:33:52,825 INFO alpha.data.collector: stop requested — finishing current cycle
-2026-08-23 10:34:23,163 INFO alpha.data.collector: collector starting: 16 req/min, 8 discovery pages, 60s cycles
-2026-08-23 10:34:45,711 ERROR alpha.http: giving up on https://api.geckoterminal.com/api/v2/networks/solana/new_pools after 5 attempts (None)
