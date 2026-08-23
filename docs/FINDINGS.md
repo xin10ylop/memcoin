@@ -447,3 +447,78 @@ Caveat: this sample is 447 rows from 77 pools, entering at 3–90 minutes of age
 It is enough to establish the *shape* — the invariance of the total-loss rate is
 not a small-sample artefact — but not enough to fit parameters to. The specific
 optimum of +250% is not a recommendation; the direction is.
+
+
+---
+
+## 12. The edge is the deployer, not the millisecond
+
+Research into early-information channels produced a result that corrects §10's
+implication. Both halves matter.
+
+**Speed is not the edge.**
+
+- Solana has no public mempool, so nothing can be seen before a mint lands.
+  Every product marketed as "pre-launch detection" is either sub-second
+  post-mint detection or inference from days-old funding activity.
+- For bundled launches the gap between mint and first buy is **exactly zero** —
+  the deployer packs create+buy into one atomic bundle. **Over 50% of pump.fun
+  tokens are bought in the block they are created**, by wallets the deployer
+  funded. That race is unwinnable *by construction*, not for want of hardware.
+- Analysis of 655,770 pump.fun tokens found **no tradeable predictive signal at
+  t=0**, with most conditional probability curves sitting below breakeven.
+  Winning the millisecond race gets you into a negative-EV bet faster.
+
+**The deployer prior is the edge.**
+
+| | Graduation rate |
+|---|---|
+| pump.fun platform baseline | **0.63%** (4,338 of 655,770) |
+| elite deployers | **40–71%** |
+
+That is a **20–100x lift in prior probability**, available before the token has
+traded at all, requiring no latency advantage whatsoever. The elite set is tiny —
+around 34 deployers at the strictest threshold — so the signal fires rarely.
+That is a feature: it is a rare, high-conviction filter, not a scoring nudge.
+
+### Why this needs Bayesian treatment
+
+A 0.63% base rate makes small samples actively misleading. A deployer with one
+graduation from three launches shows a 33% raw rate — an apparent 53x lift that
+is almost certainly luck. `alpha.features.deployer` therefore never uses raw
+rates; it applies a Beta-Binomial posterior anchored on the platform rate with
+60 pseudo-launches of prior strength:
+
+| Record | Raw rate | Posterior | Lower bound | Tier |
+|---|---|---|---|---|
+| 1/3 | 33.3% | 2.19% | 0.00% | neutral |
+| 5/10 | 50.0% | 7.68% | 2.48% | promising |
+| 8/20 | 40.0% | 10.47% | 4.88% | **elite** |
+| 45/100 | 45.0% | 28.36% | 22.52% | **elite** |
+| 0/50 | 0.0% | 0.34% | — | **factory** |
+
+The prior is deliberately heavy. With a base rate this low, promoting a lucky
+deployer costs far more than being slow to recognise a genuine one.
+
+This record is accumulated **first-hand** from the launch stream — every
+creation adds a launch, every migration adds a graduation. It is slow to
+bootstrap and cannot be copied by a competitor who has not been recording.
+
+### Other corrections worth recording
+
+- **Bundled ≠ bad, by itself.** The discriminating measurement is total bundled
+  supply versus *currently held* supply. High bundled with current-held near
+  zero means the dump already happened; high bundled with high current-held
+  means it has not. Retail checks the first and ignores the second.
+- **"A credible team bundling is bullish" is wrong.** Insider concentration is
+  the top discriminator of *high-risk* launches — early-ten buyers held 17
+  percentage points more supply in high-risk tokens.
+- **The 2026 profitability "recovery" (30% → 73% of wallets) is survivorship.**
+  Active wallets fell 68% from peak; the losers left. Only 5.37% of profitable
+  wallets cleared $1,000.
+- **Operational note:** Solana slot time was cut from 400ms to 350ms on
+  2026-08-22, targeting 200ms. Any hardcoded slot-time assumption is already
+  wrong. Jito ShredStream shuts down 2026-09-05 — do not build on it.
+- **Unmeasured and worth measuring:** the lag between a KOL's on-chain buy and
+  their post is not published anywhere. If the median is under ~2s the channel
+  is worthless. This is cheap to measure first-hand and nobody has.

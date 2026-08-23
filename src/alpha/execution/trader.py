@@ -33,6 +33,7 @@ from alpha.data.geckoterminal import GeckoTerminalClient, Pool
 from alpha.data.store import Store, utcnow
 from alpha.execution.broker import Broker, PaperBroker
 from alpha.features.build import build_features
+from alpha.features.deployer import DeployerRegistry
 from alpha.risk.exits import DumpDetectorConfig, ExitMonitor
 from alpha.signals import Signal, SignalEmitter, build_exit_plan
 from alpha.risk.portfolio import Portfolio, PortfolioConfig, Position, RiskState
@@ -136,6 +137,7 @@ class Trader:
         #: Per-position price/liquidity history, kept outside Position so the
         #: position object does not grow an unbounded buffer.
         self._monitors: dict[str, ExitMonitor] = {}
+        self.deployers = DeployerRegistry(self.store)
         self.emitter = (
             SignalEmitter(self.cfg.signals_path, echo=False, min_score=self.cfg.min_score)
             if self.cfg.emit_signals else None
@@ -384,12 +386,21 @@ class Trader:
         ).fetchone()
         if launch:
             dev_wallet = launch["dev_wallet"] or ""
-            record = self.store.dev_record(dev_wallet) or {}
-            dev_launches = max(0, int(record.get("launches", 1)) - 1)
-            if dev_launches == 0:
-                reasons.append("deployer has no prior launches on record")
-            elif dev_launches >= 3:
-                warnings.append(f"deployer has launched {dev_launches} tokens before")
+            # The deployer prior is the strongest pre-trade signal there is:
+            # elite deployers graduate at 40-71% against a 0.63% platform rate.
+            dev = self.deployers.score(dev_wallet, use_cache=False)
+            dev_launches = dev.launches
+            if dev.is_elite:
+                reasons.append(
+                    f"elite deployer: {dev.graduations}/{dev.launches} graduated "
+                    f"({dev.lift:.0f}x the platform rate)"
+                )
+            elif dev.tier == "promising":
+                reasons.append(f"deployer {dev.graduations}/{dev.launches} graduated")
+            elif dev.is_factory:
+                warnings.append(f"launch factory: {dev.launches} launches, none graduated")
+            elif dev.launches > 1:
+                warnings.append(f"deployer has {dev.launches} launches on record")
 
         if report is not None and getattr(report, "failures", None):
             for check in report.failures[:2]:
