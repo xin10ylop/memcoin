@@ -37,12 +37,25 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class DatasetRow:
+    """One (features, label) pair plus the execution context needed to replay it.
+
+    Liquidity, price, venue and symbol are carried explicitly rather than being
+    reconstructed from features later: the features are log-compressed and
+    lossy, and a backtest that recovers position-sizing inputs by inverting them
+    would quietly size every trade wrong.
+    """
+
     pool: str
     decision_ts: int
     decision_age_min: float
     features: dict[str, float]
     label: Label
     sample_weight: float = 1.0
+    liquidity_usd: float = 0.0
+    price_usd: float = 0.0
+    dex: str = ""
+    symbol: str = ""
+    mint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -50,6 +63,11 @@ class DatasetRow:
             "decision_ts": self.decision_ts,
             "decision_age_min": self.decision_age_min,
             "sample_weight": self.sample_weight,
+            "liquidity_usd": self.liquidity_usd,
+            "price_usd": self.price_usd,
+            "dex": self.dex,
+            "symbol": self.symbol,
+            "mint": self.mint,
         }
         row.update(self.features)
         row.update(
@@ -149,6 +167,7 @@ class DatasetBuilder:
             if label.barrier is Barrier.NO_ENTRY:
                 continue
             fv = build_features(snapshots, idx)
+            prow = self.store.pool_row(pool)
             out.append(
                 DatasetRow(
                     pool=pool,
@@ -156,6 +175,11 @@ class DatasetBuilder:
                     decision_age_min=age,
                     features=fv.values,
                     label=label,
+                    liquidity_usd=float(snap.get("liquidity_usd") or 0.0),
+                    price_usd=float(snap.get("price_usd") or 0.0),
+                    dex=str(prow["dex"]) if prow else "",
+                    symbol=str(prow["name"]).split("/")[0].strip() if prow else "",
+                    mint=str(prow["base_mint"]) if prow else "",
                 )
             )
 
@@ -185,7 +209,8 @@ class DatasetBuilder:
         if not rows:
             return pd.DataFrame(columns=["pool", "decision_ts", *FEATURE_NAMES, "y_net_return"])
         frame = pd.DataFrame([r.to_dict() for r in rows])
-        ordered = ["pool", "decision_ts", "decision_age_min", "sample_weight"]
+        ordered = ["pool", "decision_ts", "decision_age_min", "sample_weight",
+                   "liquidity_usd", "price_usd", "dex", "symbol", "mint"]
         ordered += [c for c in FEATURE_NAMES if c in frame.columns]
         ordered += [c for c in frame.columns if c.startswith("y_")]
         return frame[[c for c in ordered if c in frame.columns]]

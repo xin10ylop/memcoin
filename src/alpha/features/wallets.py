@@ -290,7 +290,13 @@ def score_wallets(
                 confidence_low=round(lower, 4), score=round(shrunk, 4), verdict=verdict,
             )
         )
-    scores.sort(key=lambda s: (s.confidence_low, s.n_tokens), reverse=True)
+    # Rank by the shrunk score rather than the raw Wilson bound. Wilson is
+    # correct for a single wallet in isolation, but we are selecting from
+    # thousands: with that many candidates, some will post a short perfect
+    # record by chance alone, and Wilson rates 8-from-8 above 45-from-60.
+    # Shrinkage toward the base rate penalises exactly that, so it is the
+    # appropriate key when the dominant risk is selection bias.
+    scores.sort(key=lambda s: (s.score, s.n_tokens), reverse=True)
     return scores
 
 

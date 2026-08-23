@@ -29,7 +29,12 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=200)
     ap.add_argument("--min-age-min", type=float, default=50.0,
                     help="only pools old enough for the label horizon to have elapsed")
-    ap.add_argument("--refresh", action="store_true", help="re-fetch pools that already have candles")
+    ap.add_argument("--no-refresh", action="store_true",
+                    help="only fetch pools that have no candles at all")
+    ap.add_argument("--refresh-after-min", type=float, default=25.0,
+                    help="re-fetch a pool whose newest candle is older than this many minutes")
+    ap.add_argument("--max-track-age-min", type=float, default=1440.0,
+                    help="stop refreshing pools older than this")
     ap.add_argument("--loop", action="store_true", help="run continuously")
     ap.add_argument("--log", default="INFO")
     args = ap.parse_args()
@@ -41,16 +46,41 @@ def main() -> int:
     client.http.bucket.rate = args.rpm / 60.0
 
     while True:
-        having = "" if args.refresh else "AND p.pool NOT IN (SELECT DISTINCT pool FROM candles)"
-        rows = store.conn.execute(
-            f"""SELECT p.pool FROM pools p
-                WHERE p.created_at IS NOT NULL
-                  AND (julianday('now') - julianday(p.created_at)) * 1440.0 >= ?
-                  {having}
-                ORDER BY p.created_at ASC LIMIT ?""",
+        # Two kinds of work, in priority order.
+        #
+        # 1. Pools never fetched. Without candles they cannot be labelled at all.
+        # 2. Pools whose stored candles stop before their label window closes.
+        #    A pool fetched when it was 20 minutes old holds no data covering a
+        #    decision at minute 15 with a 45-minute horizon, so its label would
+        #    be silently truncated to whatever happened to be cached. Refreshing
+        #    these is what turns a young pool into a usable training row.
+        never = store.conn.execute(
+            """SELECT p.pool FROM pools p
+               WHERE p.created_at IS NOT NULL
+                 AND (julianday('now') - julianday(p.created_at)) * 1440.0 >= ?
+                 AND p.pool NOT IN (SELECT DISTINCT pool FROM candles)
+               ORDER BY p.created_at ASC LIMIT ?""",
             (args.min_age_min, args.limit),
         ).fetchall()
-        pools = [r[0] for r in rows]
+
+        stale = [] if args.no_refresh else store.conn.execute(
+            """SELECT c.pool FROM (
+                   SELECT pool, MAX(ts) AS last_ts FROM candles GROUP BY pool
+               ) c
+               JOIN pools p ON p.pool = c.pool
+               WHERE (strftime('%s','now') - c.last_ts) / 60.0 >= ?
+                 AND (julianday('now') - julianday(p.created_at)) * 1440.0 <= ?
+               ORDER BY c.last_ts ASC LIMIT ?""",
+            (args.refresh_after_min, args.max_track_age_min, max(1, args.limit // 2)),
+        ).fetchall()
+
+        seen = set()
+        pools = []
+        for r in list(never) + list(stale):
+            if r[0] not in seen:
+                seen.add(r[0])
+                pools.append(r[0])
+        log.info("queue: %d never-fetched, %d stale", len(never), len(stale))
         if not pools:
             log.info("nothing to backfill")
             if not args.loop:
