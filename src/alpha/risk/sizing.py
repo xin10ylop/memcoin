@@ -80,9 +80,11 @@ class SizingConfig:
     max_position_usd: float = 2_000.0
     # Never take more than this share of pool depth, even if equity allows it.
     max_pool_fraction: float = 0.015
-    # Reject any trade whose round-trip cost exceeds this: the friction alone
-    # would eat a normal winner.
-    max_round_trip_cost: float = 0.12
+    # Reject any trade whose round-trip cost exceeds this. Set to 6% because
+    # measurement showed the panel's expectancy flips sign around that level:
+    # pools cheap enough to clear it were roughly breakeven, pools above it lost
+    # ~33% per trade almost entirely to friction.
+    max_round_trip_cost: float = 0.06
     # Assumed payoff geometry, matching the default label barriers.
     take_profit: float = 2.00
     stop_loss: float = 0.45

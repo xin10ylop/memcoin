@@ -21,10 +21,21 @@ which the high and low were reached. When both barriers fall inside one candle
 we assume the *stop* was hit first. This deliberately biases labels pessimistic:
 the alternative silently manufactures winners that never existed.
 
-**Absence of data is itself a label.** If a pool has no candles after T, it did
-not merely stop being observed — it stopped trading. That is a total loss, and
-recording it as missing data rather than as a loss is precisely the
-survivorship bias this system exists to avoid.
+**Absence of data is only sometimes a label.** If a pool has no candles after T
+it may have stopped trading — a total loss — or our collection may simply not
+have reached that far yet. These are opposite outcomes and must not be conflated.
+
+An earlier version treated every gap as a death. Measurement showed *all* such
+rows had candle history ending before their own decision point, so the resulting
+"31.5% of tokens go to zero" was an artefact of backfill lag, not a market fact.
+It made the strategy look far worse than it is, and pointed the model at a
+problem that did not exist.
+
+The distinction now requires evidence. A death is asserted only when the pool's
+last candle falls meaningfully behind the *data frontier* — the point up to which
+collection is known to be current. Where the frontier is unknown or the pool is
+still at it, the row is :attr:`Barrier.UNLABELLABLE` and is excluded from
+training rather than being scored as a loss.
 """
 
 from __future__ import annotations
@@ -41,8 +52,9 @@ class Barrier(str, Enum):
     TAKE_PROFIT = "take_profit"
     STOP_LOSS = "stop_loss"
     TIME = "time"
-    NO_DATA = "no_data"       # never traded again — total loss
-    NO_ENTRY = "no_entry"     # could not have entered; excluded from training
+    NO_DATA = "no_data"           # provably stopped trading — total loss
+    NO_ENTRY = "no_entry"         # could not have entered; excluded
+    UNLABELLABLE = "unlabellable"  # our data ran out; outcome unknown, excluded
 
 
 @dataclass
@@ -62,6 +74,9 @@ class LabelConfig:
     round_trip_cost: float = 0.035
     # A pool whose liquidity collapses below this is treated as rugged.
     rug_liquidity_usd: float = 500.0
+    #: How far behind the data frontier a pool's last candle must fall before we
+    #: conclude it stopped trading rather than that collection lagged.
+    death_evidence_minutes: float = 20.0
 
 
 @dataclass
@@ -128,6 +143,7 @@ def label_trade(
     candles: Sequence[Any],
     decision_ts: int,
     config: LabelConfig | None = None,
+    data_frontier_ts: int | None = None,
 ) -> Label:
     """Label the outcome of entering ``pool`` just after ``decision_ts``.
 
@@ -140,10 +156,26 @@ def label_trade(
     future = [c for c in candles if _ts(c) > decision_ts]
 
     if not future:
-        # No trading after the decision point: the token is gone.
+        # No trading after the decision point. Two very different causes.
+        last_seen = max((_ts(c) for c in candles), default=decision_ts)
+        died = (
+            data_frontier_ts is not None
+            and last_seen < data_frontier_ts - cfg.death_evidence_minutes * 60
+        )
+        if died:
+            # The pool went quiet while collection carried on elsewhere: a real
+            # total loss, and exactly the outcome the dataset must retain.
+            return Label(
+                pool=pool, decision_ts=decision_ts, entry_price=0.0, barrier=Barrier.NO_DATA,
+                exit_price=0.0, gross_return=-1.0, net_return=-1.0, minutes_held=0.0,
+                max_multiple=0.0, min_multiple=0.0, minutes_to_peak=0.0, final_multiple=0.0,
+                n_candles=0, is_win=False,
+            )
+        # Our data simply does not reach this far. The outcome is unknown, and
+        # guessing it in either direction corrupts the dataset.
         return Label(
-            pool=pool, decision_ts=decision_ts, entry_price=0.0, barrier=Barrier.NO_DATA,
-            exit_price=0.0, gross_return=-1.0, net_return=-1.0, minutes_held=0.0,
+            pool=pool, decision_ts=decision_ts, entry_price=0.0, barrier=Barrier.UNLABELLABLE,
+            exit_price=0.0, gross_return=0.0, net_return=0.0, minutes_held=0.0,
             max_multiple=0.0, min_multiple=0.0, minutes_to_peak=0.0, final_multiple=0.0,
             n_candles=0, is_win=False,
         )
@@ -214,7 +246,10 @@ def summarise(labels: Sequence[Label]) -> dict[str, Any]:
     """Aggregate statistics over a set of labels."""
     if not labels:
         return {"n": 0}
-    tradeable = [x for x in labels if x.barrier is not Barrier.NO_ENTRY]
+    tradeable = [
+        x for x in labels
+        if x.barrier not in (Barrier.NO_ENTRY, Barrier.UNLABELLABLE)
+    ]
     n = len(tradeable)
     if not n:
         return {"n": 0}

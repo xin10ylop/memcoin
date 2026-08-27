@@ -40,17 +40,37 @@ def test_time_barrier_when_price_goes_nowhere():
     assert label.minutes_held == pytest.approx(30, abs=1)
 
 
-def test_absence_of_future_data_is_a_total_loss_not_a_dropped_row():
-    """The core anti-survivorship-bias behaviour."""
-    label = label_trade("P", [], BASE)
+def test_a_pool_that_goes_quiet_while_collection_continues_is_a_total_loss():
+    """A real death: the pool stopped trading well before the data frontier."""
+    past_only = [FakeCandle(BASE - 60 * i, 1, 1, 1, 1) for i in range(1, 5)]
+    frontier = BASE + 3600          # collection is an hour past the decision
+    label = label_trade("P", past_only, BASE, data_frontier_ts=frontier)
     assert label.barrier is Barrier.NO_DATA
     assert label.net_return == -1.0
     assert not label.is_win
 
 
-def test_candles_only_before_decision_also_count_as_no_data():
+def test_missing_data_without_evidence_of_death_is_unlabellable():
+    """Regression: treating backfill lag as death produced a false 31.5%
+    total-loss rate and pointed the model at a problem that did not exist."""
     past_only = [FakeCandle(BASE - 60 * i, 1, 1, 1, 1) for i in range(1, 5)]
-    assert label_trade("P", past_only, BASE).barrier is Barrier.NO_DATA
+    # Frontier sits at the decision point: our data simply stops here.
+    label = label_trade("P", past_only, BASE, data_frontier_ts=BASE)
+    assert label.barrier is Barrier.UNLABELLABLE
+    assert label.net_return == 0.0
+
+
+def test_no_frontier_information_is_unlabellable_not_a_loss():
+    """Without a frontier we cannot distinguish the two cases, so we must not
+    guess. Fabricating a -100% outcome is the more damaging error."""
+    assert label_trade("P", [], BASE).barrier is Barrier.UNLABELLABLE
+
+
+def test_unlabellable_rows_are_excluded_from_summaries():
+    labels = [label_trade("P", rising(), BASE) for _ in range(3)]
+    labels += [label_trade("P", [], BASE) for _ in range(5)]   # unlabellable
+    summary = summarise(labels)
+    assert summary["n"] == 3
 
 
 def test_single_candle_spanning_both_barriers_resolves_pessimistically():

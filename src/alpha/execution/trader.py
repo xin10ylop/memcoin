@@ -55,7 +55,9 @@ class TraderConfig:
     # too old and the launch dynamics are over.
     min_age_min: float = 4.0
     max_age_min: float = 60.0
-    min_liquidity_usd: float = 4_000.0
+    # See alpha.features.dataset.DatasetConfig: a 6% round-trip cost budget
+    # implies roughly this much pool depth at the cost-optimal order size.
+    min_liquidity_usd: float = 17_500.0
     max_liquidity_usd: float = 3_000_000.0
     min_buyers_m5: int = 8
     # Reject tokens whose recent volume looks manufactured.

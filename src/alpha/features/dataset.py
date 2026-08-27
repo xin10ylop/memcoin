@@ -93,8 +93,18 @@ class DatasetConfig:
     # launch dynamics this system targets are over.
     min_decision_age_min: float = 3.0
     max_decision_age_min: float = 90.0
-    # Minimum liquidity for an entry to be considered realistic at all.
-    min_liquidity_usd: float = 2_000.0
+    # Minimum liquidity for an entry to be realistic.
+    #
+    # Derived from a cost budget rather than chosen: holding round-trip cost to
+    # 6% of notional requires ~$17.4k of pool depth at the cost-optimal order
+    # size. Below that the friction alone exceeds any plausible edge.
+    #
+    # This matters for training, not just execution. Measured on the panel,
+    # sub-$5k pools carry 14.6% round-trip costs and -33% expectancy while pools
+    # above $15k are roughly breakeven or better. Training on rows we could never
+    # have traded teaches the model to rank tokens whose outcomes are dominated
+    # by friction we would never have paid.
+    min_liquidity_usd: float = 17_500.0
     # Cap rows per pool so a single long-lived token cannot dominate training.
     max_rows_per_pool: int = 6
     require_candles_after: int = 3
@@ -112,6 +122,7 @@ class DatasetBuilder:
         self.store = store
         self.client = client or GeckoTerminalClient()
         self.cfg = config or DatasetConfig()
+        self._frontier_cache: int | None = None
 
     # ------------------------------------------------------------- backfill
 
@@ -146,6 +157,11 @@ class DatasetBuilder:
         if len(candles) < self.cfg.require_candles_after:
             return []
 
+        # The data frontier: the most recent candle anywhere in the panel. A pool
+        # whose own history stops well short of this went quiet while collection
+        # continued; one that reaches it is simply as current as we are.
+        frontier = self._data_frontier()
+
         out: list[DatasetRow] = []
         for idx, snap in enumerate(snapshots):
             if len(out) >= self.cfg.max_rows_per_pool:
@@ -164,8 +180,10 @@ class DatasetBuilder:
                 if max(int(c["ts"]) for c in candles) < decision_ts - 3600:
                     continue  # stale backfill, not a genuine death
 
-            label = label_trade(pool, candles, decision_ts, self.cfg.label)
-            if label.barrier is Barrier.NO_ENTRY:
+            label = label_trade(
+                pool, candles, decision_ts, self.cfg.label, data_frontier_ts=frontier
+            )
+            if label.barrier in (Barrier.NO_ENTRY, Barrier.UNLABELLABLE):
                 continue
             fv = build_features(snapshots, idx)
             prow = self.store.pool_row(pool)
@@ -190,6 +208,13 @@ class DatasetBuilder:
             for row in out:
                 row.sample_weight = weight
         return out
+
+    def _data_frontier(self) -> int | None:
+        """Most recent candle timestamp across the whole panel."""
+        if self._frontier_cache is None:
+            row = self.store.conn.execute("SELECT MAX(ts) FROM candles").fetchone()
+            self._frontier_cache = int(row[0]) if row and row[0] else 0
+        return self._frontier_cache or None
 
     def build(self, pools: Iterable[str] | None = None, limit: int | None = None) -> list[DatasetRow]:
         if pools is None:

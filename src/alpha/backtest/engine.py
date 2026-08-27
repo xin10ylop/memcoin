@@ -122,6 +122,13 @@ class Backtester:
                 for c in candles
             }
 
+        # Last candle timestamp per pool: the point beyond which our data says
+        # nothing, as distinct from the pool having stopped trading.
+        pool_end: dict[str, int] = {
+            pool: (max(idx) if idx else 0) for pool, idx in price_index.items()
+        }
+        last_seen: dict[str, float] = {}
+
         entries_by_ts: dict[int, list[Candidate]] = defaultdict(list)
         for cand in candidates:
             entries_by_ts[_floor_min(cand.decision_ts)].append(cand)
@@ -142,15 +149,41 @@ class Backtester:
             for pool, pos in portfolio.positions.items():
                 if pool in prices:
                     pos.mark(prices[pool])
+                    last_seen[pool] = prices[pool]
 
             # --- 2. exits before entries -------------------------------------
             for pool in list(portfolio.positions):
                 pos = portfolio.positions[pool]
                 price = prices.get(pool)
                 if price is None or price <= 0:
-                    # No trading in this pool: it has gone dark. Only force a
-                    # writedown once the position has aged out, so a brief gap
-                    # in candles is not mistaken for a rug.
+                    # No candle at this minute. Three different situations, and
+                    # conflating them is how a backtest invents losses.
+                    pool_last = pool_end.get(pool, 0)
+                    if ts >= pool_last:
+                        # We are past the end of this pool's recorded history.
+                        # That is our collection running out, not the token
+                        # dying — writing it off at zero would fabricate a
+                        # -100% outcome. Measured on this panel, 84% of
+                        # positions outlive their pool's candle history, so
+                        # this path dominated and made the strategy look far
+                        # worse than it is. Close at the last known price and
+                        # mark the trade so it can be excluded from analysis.
+                        last_price = last_seen.get(pool, pos.entry_price)
+                        notional = pos.tokens * last_price
+                        fill = self.costs.simulate(
+                            FillSide.SELL, notional, last_price,
+                            entry_liquidity.get(pool, pos.entry_liquidity_usd), dex=pos.dex,
+                        )
+                        trade = portfolio.close(
+                            pool, fill.filled_usd if fill.ok else notional,
+                            "data_exhausted", now,
+                        )
+                        if trade:
+                            trades.append(_trade_row(trade, last_price))
+                        continue
+                    # Otherwise the pool trades again later: this minute was
+                    # simply quiet. Hold, unless the position has aged out far
+                    # enough that it is genuinely untradeable.
                     if pos.age_minutes(now) >= pos.max_hold_min * 2:
                         trade = portfolio.close(pool, 0.0, "went_dark", now)
                         if trade:
